@@ -7,6 +7,7 @@ declare global {
   function MarkEditGetHtml(styled?: boolean): Promise<string>;
 }
 
+const BUILD = 'url-reveal-fix'; // shown in the menu so you can tell which script is loaded
 const SCALE = 3; // PNG at 3x keeps text crisp when zooming
 const PAGE_W = 794; // A4 at 96 dpi, in CSS px
 const PAGE_H = 1123;
@@ -183,9 +184,24 @@ function findListMark(root: HTMLElement): HTMLElement | null {
   return null;
 }
 
-function findLiveUrl(root: HTMLElement): HTMLElement | undefined {
-  return Array.from(root.querySelectorAll<HTMLElement>('.cm-md-url, .cm-md-link'))
-    .find(el => el.closest('.cm-md-quote') === null && /^https?:\/\//.test(el.textContent ?? ''));
+const sameColor = (a: RGBA, b: RGBA) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+
+// Plain `https://...` text is colored by the theme, but URLs inside quotes just take the quote color.
+// So collect every rendered URL and keep the first color that is neither the body nor the quote color.
+function findUrlColor(root: HTMLElement, body: RGBA, quote: RGBA): RGBA | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (parent === null || !/^\s*https?:\/\/\S+/.test(node.textContent ?? '')) {
+      continue;
+    }
+
+    const color = parseColor(getComputedStyle(parent).color);
+    if (!sameColor(color, body) && !sameColor(color, quote)) {
+      return color;
+    }
+  }
+  return null;
 }
 
 function sampleTable(root: HTMLElement): TableSample | null {
@@ -244,10 +260,10 @@ async function sampleLive(view: typeof MarkEdit.editorView, samples: Record<stri
       }
     }
 
-    if (await reveal(view, /(^|[^>\s].*\s|^)https?:\/\/\S+/) || findLiveUrl(view.contentDOM) !== undefined) {
-      const url = findLiveUrl(view.contentDOM);
-      if (url !== undefined) {
-        samples.url.color = parseColor(getComputedStyle(url).color);
+    if (await reveal(view, /^(?!\s*>).*https?:\/\/\S+/)) {
+      const url = findUrlColor(view.contentDOM, samples.line.color, samples.quote.color);
+      if (url !== null) {
+        samples.url.color = url;
       }
     }
 
@@ -321,12 +337,13 @@ function buildCSS(t: Record<string, Sampled>, table: TableSample | null, pageBg:
     inline('bold', 'strong, .pdf-root b', 'font-weight:700;'),
     inline('italic', 'em, .pdf-root i', 'font-style:italic;'),
     inline('strike', 'del, .pdf-root s', 'text-decoration:line-through;'),
-    `.pdf-root a{color:${rgba(t.url.color, 1)};text-decoration:none;}`,
+    `.pdf-root a{color:${rgba(t.link.color, 1)};text-decoration:none;}`,
+    `.pdf-root a.bare-url{color:${rgba(t.url.color, 1)};}`,
     `.pdf-root code{font-family:${t.code.family};font-size:${t.code.size}px;color:${rgba(t.code.color, 1)};background:${t.code.background[3] > 0 ? css(t.code.background) : soft(0.1)};padding:0.1em 0.3em;border-radius:4px;}`,
     `.pdf-root pre{font-family:${t.codeBlock.family};font-size:${t.codeBlock.size}px;${codeBox};padding:0.9em 1em;white-space:pre-wrap;margin:0 0 1em;}`,
     `.pdf-root pre code{background:none;padding:0;color:${rgba(t.codeBlock.color, 1)};font-size:inherit;}`,
     `.pdf-root blockquote{margin:0 0 1em;padding:0 1em;border-left:${quoteBar};}`,
-    `.pdf-root blockquote, .pdf-root blockquote *{color:${rgba(t.quote.color, 1)};font-style:italic;}`,
+    `.pdf-root blockquote, .pdf-root blockquote *, .pdf-root blockquote a.bare-url{color:${rgba(t.quote.color, 1)};font-style:italic;}`,
     // html2canvas ignores li::marker, so draw bullets and numbers ourselves.
     `.pdf-root ul,.pdf-root ol{margin:0 0 1em;padding-left:1.6em;list-style:none;counter-reset:pdfitem;}`,
     `.pdf-root li{position:relative;counter-increment:pdfitem;}`,
@@ -342,6 +359,12 @@ function buildCSS(t: Record<string, Sampled>, table: TableSample | null, pageBg:
 function cleanHtml(html: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   doc.querySelectorAll('script, style, link, meta, iframe').forEach(el => el.remove());
+  // The editor only colors full https:// URLs; bare domains that get auto-linked stay body text.
+  doc.querySelectorAll('a').forEach(a => {
+    if (/^\s*https?:\/\//.test(a.textContent ?? '')) {
+      a.classList.add('bare-url');
+    }
+  });
   return doc.body.innerHTML;
 }
 
@@ -444,6 +467,6 @@ async function exportPDF() {
 }
 
 MarkEdit.addMainMenuItem({
-  title: 'Export PDF with Theme…',
+  title: `Export PDF with Theme… (build ${BUILD})`,
   action: () => void exportPDF(),
 });
