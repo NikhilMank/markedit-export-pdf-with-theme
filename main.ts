@@ -7,7 +7,7 @@ declare global {
   function MarkEditGetHtml(styled?: boolean): Promise<string>;
 }
 
-const SCALE = 2;
+const SCALE = 3; // PNG at 3x keeps text crisp when zooming
 const PAGE_W = 794; // A4 at 96 dpi, in CSS px
 const PAGE_H = 1123;
 const MARGIN_X = 56;
@@ -81,6 +81,7 @@ function sampleTheme(view: typeof MarkEdit.editorView): Record<string, Sampled> 
     italic: 'cm-md-italic',
     strike: 'cm-md-strikethrough',
     link: 'cm-md-link',
+    url: 'cm-md-url',
     code: 'cm-md-inlineCode cm-md-monospace',
     codeBlock: 'cm-md-codeBlock cm-md-monospace',
     mark: 'cm-md-listMark',
@@ -144,9 +145,13 @@ function sampleTheme(view: typeof MarkEdit.editorView): Record<string, Sampled> 
 
   // Some colors come from generated highlight classes the probes can't see,
   // so prefer a live element when one is currently rendered.
-  const liveMark = view.dom.querySelector<HTMLElement>('.cm-md-listMark');
+  const liveMark = findListMark(view.contentDOM);
   if (liveMark !== null) {
     samples.mark.color = parseColor(getComputedStyle(liveMark).color);
+  }
+  const liveUrl = findLiveUrl(view.contentDOM);
+  if (liveUrl !== undefined) {
+    samples.url.color = parseColor(getComputedStyle(liveUrl).color);
   }
   const liveWrapper = view.dom.querySelector<HTMLElement>('.cm-md-codeBlockWrapper');
   if (liveWrapper !== null) {
@@ -158,6 +163,30 @@ function sampleTheme(view: typeof MarkEdit.editorView): Record<string, Sampled> 
   }
 
   return samples;
+}
+
+// The list marker color comes from a generated highlight class, so read it from
+// a rendered marker: either the tagged one or a bullet / number widget.
+function findListMark(root: HTMLElement): HTMLElement | null {
+  const tagged = root.querySelector<HTMLElement>('.cm-md-listMark');
+  if (tagged !== null) {
+    return tagged;
+  }
+
+  // Bullets and numbers may be widgets or plain text, so scan the rendered text nodes.
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (parent !== null && /^\s*([•◦▪‣*+-]|\d+[.)])\s*$/.test(node.textContent ?? '')) {
+      return parent;
+    }
+  }
+  return null;
+}
+
+function findLiveUrl(root: HTMLElement): HTMLElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLElement>('.cm-md-url, .cm-md-link'))
+    .find(el => el.closest('.cm-md-quote') === null && /^https?:\/\//.test(el.textContent ?? ''));
 }
 
 function buildCSS(t: Record<string, Sampled>, pageBg: RGBA): string {
@@ -195,14 +224,18 @@ function buildCSS(t: Record<string, Sampled>, pageBg: RGBA): string {
     inline('bold', 'strong, .pdf-root b', 'font-weight:700;'),
     inline('italic', 'em, .pdf-root i', 'font-style:italic;'),
     inline('strike', 'del, .pdf-root s', 'text-decoration:line-through;'),
-    inline('link', 'a', 'text-decoration:none;'),
+    `.pdf-root a{color:${rgba(t.url.color, 1)};text-decoration:none;}`,
     `.pdf-root code{font-family:${t.code.family};font-size:${t.code.size}px;color:${rgba(t.code.color, 1)};background:${t.code.background[3] > 0 ? css(t.code.background) : soft(0.1)};padding:0.1em 0.3em;border-radius:4px;}`,
     `.pdf-root pre{font-family:${t.codeBlock.family};font-size:${t.codeBlock.size}px;${codeBox};padding:0.9em 1em;white-space:pre-wrap;margin:0 0 1em;}`,
     `.pdf-root pre code{background:none;padding:0;color:${rgba(t.codeBlock.color, 1)};font-size:inherit;}`,
     `.pdf-root blockquote{margin:0 0 1em;padding:0 1em;border-left:${quoteBar};}`,
     `.pdf-root blockquote, .pdf-root blockquote *{color:${rgba(t.quote.color, 1)};font-style:italic;}`,
-    `.pdf-root ul,.pdf-root ol{margin:0 0 1em;padding-left:1.6em;}`,
-    `.pdf-root li::marker{color:${rgba(t.mark.color, 1)};}`,
+    // html2canvas ignores li::marker, so draw bullets and numbers ourselves.
+    `.pdf-root ul,.pdf-root ol{margin:0 0 1em;padding-left:1.6em;list-style:none;counter-reset:pdfitem;}`,
+    `.pdf-root li{position:relative;counter-increment:pdfitem;}`,
+    `.pdf-root li::before{position:absolute;left:-1.6em;width:1.3em;text-align:right;color:${rgba(t.mark.color, 1)};}`,
+    `.pdf-root ul > li::before{content:'•';}`,
+    `.pdf-root ol > li::before{content:counter(pdfitem) '.';}`,
     `.pdf-root hr{border:0;height:2px;background:${ruleColor};margin:1.8em 0;}`,
     `.pdf-root table{border-collapse:collapse;margin:0 0 1em;max-width:100%;}`,
     `.pdf-root th,.pdf-root td{border:1px solid ${soft(0.28)};padding:6px 12px;text-align:left;vertical-align:top;overflow-wrap:normal;word-break:normal;}`,
@@ -284,7 +317,7 @@ async function render(html: string): Promise<string> {
       if (!first) {
         pdf.addPage('a4', 'portrait');
       }
-      pdf.addImage(shot.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, PAGE_W * PT, PAGE_H * PT);
+      pdf.addImage(shot.toDataURL('image/png'), 'PNG', 0, 0, PAGE_W * PT, PAGE_H * PT);
       y = end;
     }
 
