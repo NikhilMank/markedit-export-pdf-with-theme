@@ -16,6 +16,9 @@ const PT = 595.28 / PAGE_W; // CSS px -> PDF points
 
 type RGBA = [number, number, number, number];
 
+const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
 // Parses any CSS color (including color(srgb ...) / oklch) through a canvas.
 function parseColor(color: string): RGBA {
   const context = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
@@ -59,6 +62,21 @@ interface Sampled {
   accentBorder: RGBA;
   accentBorderWidth: number;
 }
+
+interface TableSample {
+  family: string;
+  size: number;
+  border: RGBA;
+  borderWidth: number;
+  headBackground: RGBA;
+  headColor: RGBA;
+  headWeight: string;
+  cellBackground: RGBA;
+  cellAltBackground: RGBA;
+  cellColor: RGBA;
+}
+
+
 
 // Theme styles are applied by class, so we sample them from probe elements
 // instead of depending on which lines happen to be rendered right now.
@@ -143,25 +161,6 @@ function sampleTheme(view: typeof MarkEdit.editorView): Record<string, Sampled> 
     wrapper.remove();
   }
 
-  // Some colors come from generated highlight classes the probes can't see,
-  // so prefer a live element when one is currently rendered.
-  const liveMark = findListMark(view.contentDOM);
-  if (liveMark !== null) {
-    samples.mark.color = parseColor(getComputedStyle(liveMark).color);
-  }
-  const liveUrl = findLiveUrl(view.contentDOM);
-  if (liveUrl !== undefined) {
-    samples.url.color = parseColor(getComputedStyle(liveUrl).color);
-  }
-  const liveWrapper = view.dom.querySelector<HTMLElement>('.cm-md-codeBlockWrapper');
-  if (liveWrapper !== null) {
-    const s = getComputedStyle(liveWrapper);
-    samples.codeWrapper.borderColor = parseColor(s.borderTopColor);
-    samples.codeWrapper.borderWidth = parseFloat(s.borderTopWidth) || 0;
-    samples.codeWrapper.borderRadius = s.borderTopLeftRadius;
-    samples.codeWrapper.background = parseColor(s.backgroundColor);
-  }
-
   return samples;
 }
 
@@ -189,7 +188,91 @@ function findLiveUrl(root: HTMLElement): HTMLElement | undefined {
     .find(el => el.closest('.cm-md-quote') === null && /^https?:\/\//.test(el.textContent ?? ''));
 }
 
-function buildCSS(t: Record<string, Sampled>, pageBg: RGBA): string {
+function sampleTable(root: HTMLElement): TableSample | null {
+  const table = root.querySelector<HTMLElement>('.cm-md-tableWrapper table, .cm-md-table table');
+  const head = table?.querySelector<HTMLElement>('th');
+  const rows = Array.from(table?.querySelectorAll<HTMLElement>('tbody tr') ?? []);
+  const cell = rows[0]?.querySelector<HTMLElement>('td') ?? table?.querySelector<HTMLElement>('td');
+  if (table === undefined || table === null || head === null || head === undefined || cell === null || cell === undefined) {
+    return null;
+  }
+
+  const th = getComputedStyle(head);
+  const td = getComputedStyle(cell);
+  const alt = rows[1]?.querySelector<HTMLElement>('td');
+  return {
+    family: td.fontFamily,
+    size: parseFloat(td.fontSize) || 15,
+    border: parseColor(td.borderTopColor),
+    borderWidth: parseFloat(td.borderTopWidth) || 1,
+    headBackground: parseColor(th.backgroundColor),
+    headColor: parseColor(th.color),
+    headWeight: th.fontWeight,
+    cellBackground: parseColor(td.backgroundColor),
+    cellAltBackground: parseColor(alt !== undefined && alt !== null ? getComputedStyle(alt).backgroundColor : td.backgroundColor),
+    cellColor: parseColor(td.color),
+  };
+}
+
+// Scroll the editor so the first line matching `pattern` is rendered, then wait for CodeMirror.
+async function reveal(view: typeof MarkEdit.editorView, pattern: RegExp): Promise<boolean> {
+  const doc = view.state.doc;
+  for (let n = 1; n <= doc.lines; ++n) {
+    const line = doc.line(n);
+    if (pattern.test(line.text)) {
+      view.scrollDOM.scrollTop = Math.max(view.lineBlockAt(line.from).top - 40, 0);
+      await nextFrame();
+      await wait(180);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Some styles come from generated highlight classes or widgets that probes can't see,
+// so move the editor next to a matching line and read them from live elements.
+async function sampleLive(view: typeof MarkEdit.editorView, samples: Record<string, Sampled>): Promise<TableSample | null> {
+  const scroller = view.scrollDOM;
+  const savedTop = scroller.scrollTop;
+  let table: TableSample | null = null;
+
+  try {
+    if (await reveal(view, /^\s*([-*+]|\d+[.)])\s+\S/)) {
+      const mark = findListMark(view.contentDOM);
+      if (mark !== null) {
+        samples.mark.color = parseColor(getComputedStyle(mark).color);
+      }
+    }
+
+    if (await reveal(view, /(^|[^>\s].*\s|^)https?:\/\/\S+/) || findLiveUrl(view.contentDOM) !== undefined) {
+      const url = findLiveUrl(view.contentDOM);
+      if (url !== undefined) {
+        samples.url.color = parseColor(getComputedStyle(url).color);
+      }
+    }
+
+    if (await reveal(view, /^\s*```/)) {
+      const wrapper = view.contentDOM.querySelector<HTMLElement>('.cm-md-codeBlockWrapper');
+      if (wrapper !== null) {
+        const s = getComputedStyle(wrapper);
+        samples.codeWrapper.borderColor = parseColor(s.borderTopColor);
+        samples.codeWrapper.borderWidth = parseFloat(s.borderTopWidth) || 0;
+        samples.codeWrapper.borderRadius = s.borderTopLeftRadius;
+        samples.codeWrapper.background = parseColor(s.backgroundColor);
+      }
+    }
+
+    if (await reveal(view, /^\s*\|.*\|\s*$/)) {
+      table = sampleTable(view.contentDOM);
+    }
+  } finally {
+    scroller.scrollTop = savedTop;
+  }
+
+  return table;
+}
+
+function buildCSS(t: Record<string, Sampled>, table: TableSample | null, pageBg: RGBA): string {
   const base = t.line;
   const fg = base.color;
   const soft = (alpha: number) => rgba(fg, alpha);
@@ -217,6 +300,20 @@ function buildCSS(t: Record<string, Sampled>, pageBg: RGBA): string {
     return `.pdf-root ${tag}{color:${rgba(s.color, 1)};font-weight:${s.weight};font-style:${s.style};text-decoration:${s.decoration};${extra}}`;
   };
 
+  // The editor's table widget has its own look; fall back to neutral borders if it isn't available.
+  const tableCSS = table !== null
+    ? [
+      `.pdf-root table{border-collapse:collapse;margin:0 0 1em;max-width:100%;font-family:${table.family};font-size:${table.size}px;}`,
+      `.pdf-root th,.pdf-root td{border:${table.borderWidth}px solid ${css(table.border)};padding:6px 12px;text-align:left;vertical-align:top;overflow-wrap:normal;word-break:normal;color:${rgba(table.cellColor, 1)};background:${css(table.cellBackground)};}`,
+      `.pdf-root tbody tr:nth-child(even) td{background:${css(table.cellAltBackground)};}`,
+      `.pdf-root th{background:${css(table.headBackground)};color:${rgba(table.headColor, 1)};font-weight:${table.headWeight};}`,
+    ]
+    : [
+      `.pdf-root table{border-collapse:collapse;margin:0 0 1em;max-width:100%;}`,
+      `.pdf-root th,.pdf-root td{border:1px solid ${soft(0.28)};padding:6px 12px;text-align:left;vertical-align:top;overflow-wrap:normal;word-break:normal;}`,
+      `.pdf-root th{background:${soft(0.08)};font-weight:700;}`,
+    ];
+
   return [
     `.pdf-root{box-sizing:border-box;width:${PAGE_W}px;padding:0 ${MARGIN_X}px;background:${hex(pageBg)};color:${rgba(fg, 1)};font-family:${base.family};font-size:${base.size}px;line-height:${base.lineHeight};overflow-wrap:break-word;}`,
     ...['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].map(heading),
@@ -237,9 +334,7 @@ function buildCSS(t: Record<string, Sampled>, pageBg: RGBA): string {
     `.pdf-root ul > li::before{content:'•';}`,
     `.pdf-root ol > li::before{content:counter(pdfitem) '.';}`,
     `.pdf-root hr{border:0;height:2px;background:${ruleColor};margin:1.8em 0;}`,
-    `.pdf-root table{border-collapse:collapse;margin:0 0 1em;max-width:100%;}`,
-    `.pdf-root th,.pdf-root td{border:1px solid ${soft(0.28)};padding:6px 12px;text-align:left;vertical-align:top;overflow-wrap:normal;word-break:normal;}`,
-    `.pdf-root th{background:${soft(0.08)};font-weight:700;}`,
+    ...tableCSS,
     `.pdf-root img,.pdf-root svg{max-width:100%;height:auto;}`,
   ].join('\n');
 }
@@ -281,11 +376,12 @@ function nextBreak(points: number[], from: number, max: number, total: number): 
 async function render(html: string): Promise<string> {
   const view = MarkEdit.editorView;
   const theme = sampleTheme(view);
+  const table = await sampleLive(view, theme);
   const pageBg = resolveBackground(view.dom);
   const sliceH = PAGE_H - MARGIN_Y * 2;
 
   const style = document.createElement('style');
-  style.textContent = buildCSS(theme, pageBg);
+  style.textContent = buildCSS(theme, table, pageBg);
 
   const root = document.createElement('div');
   root.className = 'pdf-root';
