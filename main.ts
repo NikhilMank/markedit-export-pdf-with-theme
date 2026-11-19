@@ -53,6 +53,11 @@ interface Sampled {
   style: string;
   lineHeight: number;
   decoration: string;
+  borderColor: RGBA;
+  borderWidth: number;
+  borderRadius: string;
+  accentBorder: RGBA;
+  accentBorderWidth: number;
 }
 
 // Theme styles are applied by class, so we sample them from probe elements
@@ -79,8 +84,13 @@ function sampleTheme(view: typeof MarkEdit.editorView): Record<string, Sampled> 
     code: 'cm-md-inlineCode cm-md-monospace',
     codeBlock: 'cm-md-codeBlock cm-md-monospace',
     mark: 'cm-md-listMark',
-    quote: 'cm-md-quote',
-    hr: 'cm-md-horizontalRule',
+  };
+
+  // Block-level classes are applied to whole lines or wrappers, not to inline spans.
+  const blocks: Record<string, string> = {
+    quote: 'cm-line cm-md-quote',
+    hr: 'cm-line cm-md-horizontalRule',
+    codeWrapper: 'cm-md-codeBlockWrapper',
   };
 
   const nodes: Record<string, HTMLElement> = {};
@@ -94,6 +104,14 @@ function sampleTheme(view: typeof MarkEdit.editorView): Record<string, Sampled> 
     span.textContent = 'x';
     line.appendChild(span);
     nodes[key] = span;
+  }
+
+  for (const [key, cls] of Object.entries(blocks)) {
+    const block = document.createElement('div');
+    block.className = cls;
+    block.textContent = 'x';
+    content.appendChild(block);
+    nodes[key] = block;
   }
 
   view.dom.appendChild(wrapper);
@@ -113,10 +131,30 @@ function sampleTheme(view: typeof MarkEdit.editorView): Record<string, Sampled> 
         style: s.fontStyle,
         lineHeight: Number.isFinite(lh) ? lh / size : 1.6,
         decoration: s.textDecorationLine,
+        borderColor: parseColor(s.borderTopColor),
+        borderWidth: parseFloat(s.borderTopWidth) || 0,
+        borderRadius: s.borderTopLeftRadius,
+        accentBorder: parseColor(s.borderLeftColor),
+        accentBorderWidth: parseFloat(s.borderLeftWidth) || 0,
       };
     }
   } finally {
     wrapper.remove();
+  }
+
+  // Some colors come from generated highlight classes the probes can't see,
+  // so prefer a live element when one is currently rendered.
+  const liveMark = view.dom.querySelector<HTMLElement>('.cm-md-listMark');
+  if (liveMark !== null) {
+    samples.mark.color = parseColor(getComputedStyle(liveMark).color);
+  }
+  const liveWrapper = view.dom.querySelector<HTMLElement>('.cm-md-codeBlockWrapper');
+  if (liveWrapper !== null) {
+    const s = getComputedStyle(liveWrapper);
+    samples.codeWrapper.borderColor = parseColor(s.borderTopColor);
+    samples.codeWrapper.borderWidth = parseFloat(s.borderTopWidth) || 0;
+    samples.codeWrapper.borderRadius = s.borderTopLeftRadius;
+    samples.codeWrapper.background = parseColor(s.backgroundColor);
   }
 
   return samples;
@@ -126,6 +164,21 @@ function buildCSS(t: Record<string, Sampled>, pageBg: RGBA): string {
   const base = t.line;
   const fg = base.color;
   const soft = (alpha: number) => rgba(fg, alpha);
+  const wrapper = t.codeWrapper;
+  const codeBox = wrapper.borderWidth > 0 && wrapper.borderColor[3] > 0
+    ? `background:${wrapper.background[3] > 0 ? css(wrapper.background) : 'transparent'};border:${wrapper.borderWidth}px solid ${css(wrapper.borderColor)};border-radius:${wrapper.borderRadius}`
+    : `background:transparent;border:1px solid ${soft(0.3)};border-radius:8px`;
+  const quote = t.quote;
+  const quoteBar = quote.accentBorderWidth > 0 && quote.accentBorder[3] > 0
+    ? `${quote.accentBorderWidth}px solid ${css(quote.accentBorder)}`
+    : `4px solid ${soft(0.35)}`;
+  const rule = t.hr;
+  const ruleColor = rule.background[3] > 0
+    ? css(rule.background)
+    : rule.borderWidth > 0 && rule.borderColor[3] > 0
+      ? css(rule.borderColor)
+      : rgba(rule.color, 0.7);
+
   const heading = (key: string) => {
     const h = t[key];
     return `.pdf-root ${key}{color:${rgba(h.color, 1)};font-family:${h.family};font-size:${h.size}px;font-weight:${h.weight};font-style:${h.style};line-height:${h.lineHeight};margin:1.3em 0 0.6em;}`;
@@ -136,22 +189,23 @@ function buildCSS(t: Record<string, Sampled>, pageBg: RGBA): string {
   };
 
   return [
-    `.pdf-root{box-sizing:border-box;width:${PAGE_W}px;padding:0 ${MARGIN_X}px;background:${hex(pageBg)};color:${rgba(fg, 1)};font-family:${base.family};font-size:${base.size}px;line-height:${base.lineHeight};overflow-wrap:anywhere;}`,
+    `.pdf-root{box-sizing:border-box;width:${PAGE_W}px;padding:0 ${MARGIN_X}px;background:${hex(pageBg)};color:${rgba(fg, 1)};font-family:${base.family};font-size:${base.size}px;line-height:${base.lineHeight};overflow-wrap:break-word;}`,
     ...['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].map(heading),
     `.pdf-root p{margin:0 0 1em;}`,
-    inline('bold', 'strong, .pdf-root b'),
-    inline('italic', 'em, .pdf-root i'),
-    inline('strike', 'del, .pdf-root s'),
+    inline('bold', 'strong, .pdf-root b', 'font-weight:700;'),
+    inline('italic', 'em, .pdf-root i', 'font-style:italic;'),
+    inline('strike', 'del, .pdf-root s', 'text-decoration:line-through;'),
     inline('link', 'a', 'text-decoration:none;'),
     `.pdf-root code{font-family:${t.code.family};font-size:${t.code.size}px;color:${rgba(t.code.color, 1)};background:${t.code.background[3] > 0 ? css(t.code.background) : soft(0.1)};padding:0.1em 0.3em;border-radius:4px;}`,
-    `.pdf-root pre{font-family:${t.codeBlock.family};font-size:${t.codeBlock.size}px;background:${t.codeBlock.background[3] > 0 ? css(t.codeBlock.background) : soft(0.08)};border-radius:6px;padding:0.9em 1em;white-space:pre-wrap;margin:0 0 1em;}`,
+    `.pdf-root pre{font-family:${t.codeBlock.family};font-size:${t.codeBlock.size}px;${codeBox};padding:0.9em 1em;white-space:pre-wrap;margin:0 0 1em;}`,
     `.pdf-root pre code{background:none;padding:0;color:${rgba(t.codeBlock.color, 1)};font-size:inherit;}`,
-    `.pdf-root blockquote{margin:0 0 1em;padding:0 1em;border-left:4px solid ${soft(0.35)};color:${rgba(t.quote.color, 1)};font-style:${t.quote.style};}`,
+    `.pdf-root blockquote{margin:0 0 1em;padding:0 1em;border-left:${quoteBar};}`,
+    `.pdf-root blockquote, .pdf-root blockquote *{color:${rgba(t.quote.color, 1)};font-style:italic;}`,
     `.pdf-root ul,.pdf-root ol{margin:0 0 1em;padding-left:1.6em;}`,
     `.pdf-root li::marker{color:${rgba(t.mark.color, 1)};}`,
-    `.pdf-root hr{border:0;height:2px;background:${soft(0.3)};margin:1.5em 0;}`,
+    `.pdf-root hr{border:0;height:2px;background:${ruleColor};margin:1.8em 0;}`,
     `.pdf-root table{border-collapse:collapse;margin:0 0 1em;max-width:100%;}`,
-    `.pdf-root th,.pdf-root td{border:1px solid ${soft(0.28)};padding:6px 12px;text-align:left;vertical-align:top;}`,
+    `.pdf-root th,.pdf-root td{border:1px solid ${soft(0.28)};padding:6px 12px;text-align:left;vertical-align:top;overflow-wrap:normal;word-break:normal;}`,
     `.pdf-root th{background:${soft(0.08)};font-weight:700;}`,
     `.pdf-root img,.pdf-root svg{max-width:100%;height:auto;}`,
   ].join('\n');
@@ -173,10 +227,18 @@ function breakPoints(root: HTMLElement): number[] {
   return [...tops].sort((a, b) => a - b);
 }
 
-function nextBreak(points: number[], from: number, max: number): number {
-  let best = from + max; // hard cut if a block is taller than a page
+function nextBreak(points: number[], from: number, max: number, total: number): number {
+  if (total - from <= max) {
+    return total;
+  }
+
+  // Keep at least a few lines for the last page instead of leaving a lone orphan.
+  const minTail = max * 0.18;
+  const limit = total - (from + max) < minTail ? total - minTail : from + max;
+
+  let best = limit; // hard cut if a block is taller than a page
   for (const p of points) {
-    if (p > from + max * 0.4 && p <= from + max) {
+    if (p > from + max * 0.4 && p <= limit) {
       best = p;
     }
   }
@@ -197,9 +259,14 @@ async function render(html: string): Promise<string> {
   root.style.cssText = 'position:absolute;left:0;top:0;';
   root.innerHTML = cleanHtml(html);
 
+  // frame is one full page (so margins share the exact same pixels as the content),
+  // clip shows one slice of the document inside the margins.
   const frame = document.createElement('div');
-  frame.style.cssText = `position:absolute;left:0;top:0;width:${PAGE_W}px;height:${sliceH}px;overflow:hidden;z-index:-1;background:${hex(pageBg)};`;
-  frame.append(style, root);
+  frame.style.cssText = `position:absolute;left:0;top:0;width:${PAGE_W}px;height:${PAGE_H}px;overflow:hidden;z-index:-1;background:${hex(pageBg)};`;
+  const clip = document.createElement('div');
+  clip.style.cssText = `position:absolute;left:0;top:${MARGIN_Y}px;width:${PAGE_W}px;height:${sliceH}px;overflow:hidden;`;
+  clip.append(style, root);
+  frame.appendChild(clip);
   document.body.appendChild(frame);
 
   try {
@@ -209,17 +276,15 @@ async function render(html: string): Promise<string> {
     const pdf = new jsPDF({ unit: 'pt', format: 'a4', compress: true });
 
     for (let y = 0, first = true; y < total || first; first = false) {
-      const end = Math.min(nextBreak(points, y, sliceH), Math.max(total, y + 1));
+      const end = Math.min(nextBreak(points, y, sliceH, total), Math.max(total, y + 1));
       root.style.top = `${-y}px`;
-      frame.style.height = `${Math.min(end - y, sliceH)}px`;
+      clip.style.height = `${Math.min(end - y, sliceH)}px`;
 
       const shot = await html2canvas(frame, { scale: SCALE, backgroundColor: hex(pageBg), useCORS: true });
       if (!first) {
         pdf.addPage('a4', 'portrait');
       }
-      pdf.setFillColor(hex(pageBg));
-      pdf.rect(0, 0, 595.28, 841.89, 'F');
-      pdf.addImage(shot.toDataURL('image/jpeg', 0.95), 'JPEG', 0, MARGIN_Y * PT, PAGE_W * PT, (shot.height / SCALE) * PT);
+      pdf.addImage(shot.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, PAGE_W * PT, PAGE_H * PT);
       y = end;
     }
 
