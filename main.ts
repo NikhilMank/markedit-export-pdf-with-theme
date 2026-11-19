@@ -7,7 +7,6 @@ declare global {
   function MarkEditGetHtml(styled?: boolean): Promise<string>;
 }
 
-const BUILD = 'url-reveal-fix'; // shown in the menu so you can tell which script is loaded
 const SCALE = 3; // PNG at 3x keeps text crisp when zooming
 const PAGE_W = 794; // A4 at 96 dpi, in CSS px
 const PAGE_H = 1123;
@@ -204,6 +203,36 @@ function findUrlColor(root: HTMLElement, body: RGBA, quote: RGBA): RGBA | null {
   return null;
 }
 
+interface Edge {
+  color: RGBA;
+  width: number;
+}
+
+// The editor may draw bars and lines as a border, an inset box-shadow, or a pseudo-element,
+// so look at all of them and return the first one that is actually visible.
+function visibleEdge(el: HTMLElement, sides: string[]): Edge | null {
+  for (const pseudo of [null, '::before', '::after']) {
+    const style = getComputedStyle(el, pseudo);
+    for (const side of sides) {
+      const width = parseFloat(style.getPropertyValue(`border-${side}-width`));
+      const color = parseColor(style.getPropertyValue(`border-${side}-color`));
+      if (width > 0 && style.getPropertyValue(`border-${side}-style`) !== 'none' && color[3] > 0) {
+        return { color, width };
+      }
+    }
+
+    const shadows = style.boxShadow.matchAll(/(rgba?\([^)]+\)|color\([^)]+\))\s+(-?[\d.]+)px\s+(-?[\d.]+)px\s+([\d.]+)px(?:\s+([\d.]+)px)?/g);
+    for (const m of shadows) {
+      const width = parseFloat(m[5] ?? '0') || Math.max(Math.abs(parseFloat(m[2])), Math.abs(parseFloat(m[3])));
+      const color = parseColor(m[1]);
+      if (width > 0 && color[3] > 0) {
+        return { color, width };
+      }
+    }
+  }
+  return null;
+}
+
 function sampleTable(root: HTMLElement): TableSample | null {
   const table = root.querySelector<HTMLElement>('.cm-md-tableWrapper table, .cm-md-table table');
   const head = table?.querySelector<HTMLElement>('th');
@@ -216,11 +245,15 @@ function sampleTable(root: HTMLElement): TableSample | null {
   const th = getComputedStyle(head);
   const td = getComputedStyle(cell);
   const alt = rows[1]?.querySelector<HTMLElement>('td');
+  const edge = [cell, head, cell.parentElement, table]
+    .filter((el): el is HTMLElement => el !== null)
+    .map(el => visibleEdge(el, ['bottom', 'top', 'left']))
+    .find(e => e !== null) ?? null;
   return {
     family: td.fontFamily,
     size: parseFloat(td.fontSize) || 15,
-    border: parseColor(td.borderTopColor),
-    borderWidth: parseFloat(td.borderTopWidth) || 1,
+    border: edge?.color ?? ([...parseColor(td.color).slice(0, 3), 0.2] as RGBA),
+    borderWidth: edge?.width ?? 1,
     headBackground: parseColor(th.backgroundColor),
     headColor: parseColor(th.color),
     headWeight: th.fontWeight,
@@ -267,6 +300,29 @@ async function sampleLive(view: typeof MarkEdit.editorView, samples: Record<stri
       }
     }
 
+    if (await reveal(view, /^\s*>/)) {
+      const quote = view.contentDOM.querySelector<HTMLElement>('.cm-md-quote');
+      if (quote !== null) {
+        const chain: HTMLElement[] = [];
+        for (let el: HTMLElement | null = quote; el !== null && el !== view.contentDOM; el = el.parentElement) {
+          chain.push(el);
+        }
+        const mark = quote.closest('.cm-line')?.querySelector<HTMLElement>('.cm-md-quoteMark');
+        const edge = [...chain, ...(mark !== null && mark !== undefined ? [mark] : [])]
+          .map(el => visibleEdge(el, ['left']))
+          .find(e => e !== null);
+        if (edge !== undefined && edge !== null) {
+          samples.quote.accentBorder = edge.color;
+          samples.quote.accentBorderWidth = edge.width;
+        } else {
+          // No real border found: the bar shares its color with the quote mark, or with list marks.
+          const markColor = mark !== null && mark !== undefined ? parseColor(getComputedStyle(mark).color) : null;
+          samples.quote.accentBorder = markColor !== null && !sameColor(markColor, samples.line.color) ? markColor : samples.mark.color;
+          samples.quote.accentBorderWidth = 3;
+        }
+      }
+    }
+
     if (await reveal(view, /^\s*```/)) {
       const wrapper = view.contentDOM.querySelector<HTMLElement>('.cm-md-codeBlockWrapper');
       if (wrapper !== null) {
@@ -305,7 +361,7 @@ function buildCSS(t: Record<string, Sampled>, table: TableSample | null, pageBg:
     ? css(rule.background)
     : rule.borderWidth > 0 && rule.borderColor[3] > 0
       ? css(rule.borderColor)
-      : rgba(rule.color, 0.7);
+      : rgba(rule.color, 0.5);
 
   const heading = (key: string) => {
     const h = t[key];
@@ -467,6 +523,6 @@ async function exportPDF() {
 }
 
 MarkEdit.addMainMenuItem({
-  title: `Export PDF with Theme… (build ${BUILD})`,
+  title: 'Export PDF with Theme…',
   action: () => void exportPDF(),
 });
