@@ -1,5 +1,5 @@
 import { MarkEdit } from 'markedit-api';
-import html2canvas from 'html2canvas';
+import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
 
 declare global {
@@ -13,12 +13,26 @@ const A4_RATIO = 297 / 210;
 const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
+// Normalize any CSS color (including color(srgb ...) / oklch) to #rrggbb,
+// since jsPDF only understands plain colors.
+function toHex(color: string): string {
+  const context = document.createElement('canvas').getContext('2d');
+  if (context === null) {
+    return '#ffffff';
+  }
+  context.fillStyle = '#ffffff';
+  context.fillStyle = color;
+  context.fillRect(0, 0, 1, 1);
+  const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+  return `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
 // Walk up from an element to find the background the user actually sees.
 function resolveBackground(el: HTMLElement): string {
   for (let node: HTMLElement | null = el; node !== null; node = node.parentElement) {
     const color = getComputedStyle(node).backgroundColor;
     if (color !== 'rgba(0, 0, 0, 0)' && color !== 'transparent') {
-      return color;
+      return toHex(color);
     }
   }
   return '#ffffff';
