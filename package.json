@@ -2,19 +2,36 @@
   "name": "markedit-export-pdf-with-theme",
   "version": "0.1.0",
   "description": "Export the rendered preview as a PDF that keeps the active theme.",
+  "license": "MIT",
+  "author": "NikhilMank",
+  "homepage": "https://github.com/NikhilMank/markedit-export-pdf-with-theme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NikhilMank/markedit-export-pdf-with-theme.git"
+  },
+  "bugs": {
+    "url": "https://github.com/NikhilMank/markedit-export-pdf-with-theme/issues"
+  },
+  "keywords": [
+    "markedit",
+    "markedit-extension",
+    "pdf",
+    "export",
+    "theme"
+  ],
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build"
   },
-  "devDependencies": {
-    "markedit-api": "latest",
-    "markedit-vite": "latest",
-    "typescript": "^5.6.0",
-    "vite": "^6.0.0"
-  },
   "dependencies": {
     "html2canvas-pro": "^2.5.0",
     "jspdf": "^4.2.1"
+  },
+  "devDependencies": {
+    "markedit-api": "^0.41.0",
+    "markedit-vite": "^0.6.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0"
   }
 }

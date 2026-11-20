@@ -11,8 +11,12 @@ The existing PDF export extensions render their own styling, so the result doesn
 
 ## Install
 
-1. Build the extension (see [Build](#build)), which produces `dist/markedit-export-pdf-with-theme.cjs`.
-2. Copy it into MarkEdit's scripts folder, renamed to end in `.js`:
+Once it is listed in MarkEdit's extension manager, install it from there and restart MarkEdit.
+
+To install by hand:
+
+1. Download `markedit-export-pdf-with-theme.js` from the [latest release](https://github.com/NikhilMank/markedit-export-pdf-with-theme/releases/latest), or build it yourself (see [Build](#build)). The build produces `dist/markedit-export-pdf-with-theme.cjs`, which must be renamed to end in `.js`.
+2. Copy the file into MarkEdit's scripts folder:
 
    ```
    ~/Library/Containers/app.cyan.markedit/Data/Documents/scripts/markedit-export-pdf-with-theme.js
@@ -68,3 +72,7 @@ The build type-checks, then bundles everything into a single file, because MarkE
 - **Menu item missing, or changes not showing:** the script was not replaced, or MarkEdit was not restarted. Check the `scripts` folder for duplicate copies.
 - **"PDF export failed":** the alert shows the error text. Report it with the document features involved.
 - **A color is wrong:** some theme colors come from generated classes and are read from live editor elements. If the document has no example (a plain `https://` link outside a quote, a list, a code block, a table), that color falls back to the body text color or a neutral style.
+
+## License
+
+[MIT](LICENSE). The bundled libraries (html2canvas-pro, jsPDF and their dependencies) keep their own licenses, whose notices are preserved in the built file.
