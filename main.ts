@@ -412,9 +412,30 @@ function buildCSS(t: Record<string, Sampled>, table: TableSample | null, pageBg:
   ].join('\n');
 }
 
+const UNSAFE_TAGS = 'script, style, link, meta, base, iframe, frame, frameset, object, embed, applet, form, template, noscript, foreignObject, animate, set';
+const URL_ATTRS = ['href', 'src', 'srcset', 'xlink:href', 'action', 'formaction', 'poster', 'background', 'data', 'srcdoc'];
+
+// The HTML ends up in the live editor page, so it must not carry anything executable.
+function sanitize(doc: Document) {
+  doc.querySelectorAll(UNSAFE_TAGS).forEach(el => el.remove());
+  doc.querySelectorAll('*').forEach(el => {
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.replace(/[\u0000- \u007f-\u009f]/g, '').toLowerCase();
+      if (name.startsWith('on') || name === 'srcdoc') {
+        el.removeAttribute(attr.name);
+      } else if (URL_ATTRS.includes(name) && /^(javascript|vbscript|data:text|data:application)/.test(value)) {
+        el.removeAttribute(attr.name);
+      } else if (name === 'style' && /expression\(|javascript:|url\(/.test(value)) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+}
+
 function cleanHtml(html: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script, style, link, meta, iframe').forEach(el => el.remove());
+  sanitize(doc);
   // The editor only colors full https:// URLs; bare domains that get auto-linked stay body text.
   doc.querySelectorAll('a').forEach(a => {
     if (/^\s*https?:\/\//.test(a.textContent ?? '')) {
