@@ -403,6 +403,7 @@ function buildCSS(t: Record<string, Sampled>, table: TableSample | null, pageBg:
     // html2canvas ignores li::marker, so draw bullets and numbers ourselves.
     `.pdf-root ul,.pdf-root ol{margin:0 0 1em;padding-left:1.6em;list-style:none;counter-reset:pdfitem;}`,
     `.pdf-root li{position:relative;counter-increment:pdfitem;}`,
+    `.pdf-root li > ul,.pdf-root li > ol{margin:0;}`,
     `.pdf-root li::before{position:absolute;left:-1.6em;width:1.3em;text-align:right;color:${rgba(t.mark.color, 1)};}`,
     `.pdf-root ul > li::before{content:'•';}`,
     `.pdf-root ol > li::before{content:counter(pdfitem) '.';}`,
@@ -412,7 +413,7 @@ function buildCSS(t: Record<string, Sampled>, table: TableSample | null, pageBg:
   ].join('\n');
 }
 
-const UNSAFE_TAGS = 'script, style, link, meta, base, iframe, frame, frameset, object, embed, applet, form, template, noscript, foreignObject, animate, set';
+const UNSAFE_TAGS = 'script, style, link, meta, base, iframe, frame, frameset, object, embed, applet, form, template, noscript, foreignObject, animate, set, use';
 const URL_ATTRS = ['href', 'src', 'srcset', 'xlink:href', 'action', 'formaction', 'poster', 'background', 'data', 'srcdoc'];
 
 // The HTML ends up in the live editor page, so it must not carry anything executable.
@@ -422,9 +423,11 @@ function sanitize(doc: Document) {
     for (const attr of Array.from(el.attributes)) {
       const name = attr.name.toLowerCase();
       const value = attr.value.replace(/[\u0000- \u007f-\u009f]/g, '').toLowerCase();
-      if (name.startsWith('on') || name === 'srcdoc') {
+      if (name.startsWith('on') || name === 'srcdoc' || name === 'autofocus') {
         el.removeAttribute(attr.name);
-      } else if (URL_ATTRS.includes(name) && /^(javascript|vbscript|data:text|data:application)/.test(value)) {
+      } else if (URL_ATTRS.includes(name) && /^(javascript|vbscript)/.test(value)) {
+        el.removeAttribute(attr.name);
+      } else if (URL_ATTRS.includes(name) && value.startsWith('data:') && !/^data:image\/(png|jpe?g|gif|webp|avif|bmp)[;,]/.test(value)) {
         el.removeAttribute(attr.name);
       } else if (name === 'style' && /expression\(|javascript:|url\(/.test(value)) {
         el.removeAttribute(attr.name);
@@ -433,9 +436,28 @@ function sanitize(doc: Document) {
   });
 }
 
+// Parsing the serialized result again can change its structure (namespace confusion between
+// HTML, SVG and MathML), so keep sanitizing until the output no longer changes.
+function sanitizeHtml(html: string): string {
+  let current = html;
+  for (let pass = 0; pass < 5; pass++) {
+    const doc = new DOMParser().parseFromString(current, 'text/html');
+    sanitize(doc);
+    const next = doc.body.innerHTML;
+    if (next === current) {
+      return next;
+    }
+    current = next;
+  }
+
+  // Never settled: fall back to plain text rather than risk a parser mismatch.
+  const holder = document.createElement('div');
+  holder.textContent = new DOMParser().parseFromString(current, 'text/html').body.textContent;
+  return holder.innerHTML;
+}
+
 function cleanHtml(html: string): string {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  sanitize(doc);
+  const doc = new DOMParser().parseFromString(sanitizeHtml(html), 'text/html');
   // The editor only colors full https:// URLs; bare domains that get auto-linked stay body text.
   doc.querySelectorAll('a').forEach(a => {
     if (/^\s*https?:\/\//.test(a.textContent ?? '')) {
